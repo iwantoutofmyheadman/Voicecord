@@ -4,7 +4,7 @@ import json
 import time
 import threading
 import requests
-import websocket as wsclient
+from websocket import WebSocket
 from keep_alive import keep_alive
 
 status = "online"  # online / dnd / idle
