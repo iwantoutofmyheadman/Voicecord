@@ -4,20 +4,20 @@ import json
 import time
 import threading
 import requests
+import random
 from websocket import WebSocket
 from keep_alive import keep_alive
 
-status = "online"  # online / dnd / idle
-
+# Initial default settings
 GUILD_ID = "1474464326051172418"
 CHANNEL_ID = "1474495027223855104"
-OWNER_ID = "1407866476949536848"  # Only this user can trigger the commands
+OWNER_ID = "1407866476949536848"
 
 SELF_MUTE = False
 SELF_DEAF = False
 
-# Set to False initially. It will NOT join VC until you type ,j in chat.
 should_be_in_vc = False 
+current_status = "online" # Track status globally
 
 usertoken = os.getenv("TOKEN")
 if not usertoken:
@@ -29,19 +29,14 @@ headers = {
     "Content-Type": "application/json"
 }
 
-validate = requests.get(
-    "https://canary.discordapp.com/api/v9/users/@me",
-    headers=headers
-)
-
-if validate.status_code != 200:
-    print("[ERROR] Invalid token.")
-    sys.exit()
-
-userinfo = validate.json()
-username = userinfo["username"]
-discriminator = userinfo["discriminator"]
-userid = userinfo["id"]
+def stealth_delete(channel_id, message_id):
+    delay = random.uniform(1.2, 3.5)
+    time.sleep(delay)
+    url = f"https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}"
+    try:
+        requests.delete(url, headers=headers)
+    except Exception:
+        pass
 
 def heartbeat_loop(ws, interval):
     while True:
@@ -51,8 +46,8 @@ def heartbeat_loop(ws, interval):
         except:
             break
 
-def joiner(token, status):
-    global should_be_in_vc
+def joiner(token):
+    global should_be_in_vc, current_status
     
     ws = WebSocket()
     ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
@@ -60,23 +55,17 @@ def joiner(token, status):
     hello = json.loads(ws.recv())
     heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
 
+    # Identification & Presence Payload
     auth = {
         "op": 2,
         "d": {
             "token": token,
-            "properties": {
-                "$os": "windows",
-                "$browser": "chrome",
-                "$device": "pc"
-            },
-            "presence": {
-                "status": status,
-                "afk": False
-            }
+            "properties": {"$os": "windows", "$browser": "chrome", "$device": "pc"},
+            "presence": {"status": current_status, "afk": False}
         }
     }
 
-    # Base VC Payload
+    # Voice Channel Payload
     vc_payload = {
         "op": 4,
         "d": {
@@ -89,62 +78,65 @@ def joiner(token, status):
 
     ws.send(json.dumps(auth))
     
-    # It checks the variable here. If you haven't typed ,j yet, it skips joining.
+    # Rejoin VC if state was already active before a disconnect
     if should_be_in_vc:
         ws.send(json.dumps(vc_payload))
 
-    threading.Thread(
-        target=heartbeat_loop,
-        args=(ws, heartbeat_interval),
-        daemon=True
-    ).start()
+    threading.Thread(target=heartbeat_loop, args=(ws, heartbeat_interval), daemon=True).start()
 
     while True:
         response = ws.recv()
-        if not response:
-            break
+        if not response: break
             
         try:
             event = json.loads(response)
-            
-            # This is where it listens to your chat messages to trigger the command
             if event.get("t") == "MESSAGE_CREATE":
                 msg_data = event.get("d", {})
                 author_id = msg_data.get("author", {}).get("id")
                 content = msg_data.get("content")
+                msg_id = msg_data.get("id")
+                msg_chan_id = msg_data.get("channel_id")
                 
-                # Verifies it's actually YOU typing the command
                 if author_id == OWNER_ID:
-                    
-                    # The LEAVE command
+                    # --- LEAVE CALL / ONLINE ---
                     if content == ",l":
-                        print("Leave command received. Leaving VC.")
                         should_be_in_vc = False
+                        current_status = "online"
                         
-                        leave_payload = vc_payload.copy()
-                        leave_payload["d"]["channel_id"] = None
-                        ws.send(json.dumps(leave_payload))
+                        # Update VC (Leave)
+                        leave_vc = vc_payload.copy()
+                        leave_vc["d"]["channel_id"] = None
+                        ws.send(json.dumps(leave_vc))
                         
-                    # The JOIN command
+                        # Update Status (Online)
+                        ws.send(json.dumps({"op": 3, "d": {"status": "online", "afk": False, "since": 0, "activities": []}}))
+                        
+                        print("Left VC and set status to Online.")
+                        threading.Thread(target=stealth_delete, args=(msg_chan_id, msg_id)).start()
+                        
+                    # --- JOIN CALL / DND ---
                     elif content == ",j":
-                        print("Join command received. Joining VC.")
                         should_be_in_vc = True
+                        current_status = "dnd"
                         
-                        join_payload = vc_payload.copy()
-                        join_payload["d"]["channel_id"] = CHANNEL_ID
-                        ws.send(json.dumps(join_payload))
+                        # Update VC (Join)
+                        ws.send(json.dumps(vc_payload))
                         
-        except json.JSONDecodeError:
+                        # Update Status (DnD)
+                        ws.send(json.dumps({"op": 3, "d": {"status": "dnd", "afk": False, "since": 0, "activities": []}}))
+                        
+                        print("Joined VC and set status to DnD.")
+                        threading.Thread(target=stealth_delete, args=(msg_chan_id, msg_id)).start()
+                        
+        except Exception:
             pass
 
 def run_joiner():
-    print(f"Logged in as {username}#{discriminator} ({userid})")
-    print("Listening for commands. Type ',j' in any chat to join the VC.")
+    print("Ready. Commands: ,j (Join/DnD) | ,l (Leave/Online)")
     while True:
         try:
-            joiner(usertoken, status)
-        except Exception as e:
-            print("Disconnected, reconnecting...", e)
+            joiner(usertoken)
+        except Exception:
             time.sleep(5)
 
 keep_alive()
