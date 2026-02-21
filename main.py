@@ -7,18 +7,30 @@ import requests
 import random
 import base64
 from websocket import WebSocket
-from keep_alive import keep_alive
+from flask import Flask
 
 # --- CONFIGURATION ---
-TARGET_GUILD_ID = "1474464326051172418" # The only server where commands will work
-TARGET_CHANNEL_ID = "1474495027223855104" # The VC to join
+TARGET_GUILD_ID = "1474464326051172418" 
+TARGET_CHANNEL_ID = "1474495027223855104" 
 OWNER_ID = "1407866476949536848"
 
+# Global state
 should_be_in_vc = False 
 current_status = "online" 
 
 usertoken = os.getenv("TOKEN")
+if not usertoken:
+    print("[ERROR] TOKEN environment variable is missing!")
+    sys.exit()
 
+# --- WEB SERVER (FOR RAILWAY HEALTH CHECKS) ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is running", 200
+
+# --- UTILS ---
 def get_super_properties():
     props = {
         "os": "Windows", "browser": "Chrome", "device": "",
@@ -35,17 +47,18 @@ headers = {
 }
 
 def stealth_delete(channel_id, message_id):
-    time.sleep(random.uniform(3.0, 5.5))
+    time.sleep(random.uniform(2.5, 4.5))
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}"
     try: requests.delete(url, headers=headers)
     except: pass
 
 def heartbeat_loop(ws, interval):
     while True:
-        time.sleep(interval + random.uniform(0.1, 0.7))
+        time.sleep(interval + random.uniform(0.1, 0.5))
         try: ws.send(json.dumps({"op": 1, "d": None}))
         except: break
 
+# --- MAIN GATEWAY LOGIC ---
 def joiner(token):
     global should_be_in_vc, current_status
     ws = WebSocket()
@@ -80,38 +93,43 @@ def joiner(token):
             event = json.loads(response)
             if event.get("t") == "MESSAGE_CREATE":
                 data = event.get("d", {})
-                
-                # --- ADDED SECURITY CHECKS ---
-                msg_guild_id = data.get("guild_id")
-                author_id = data.get("author", {}).get("id")
-                content = data.get("content")
+                if data.get("author", {}).get("id") == OWNER_ID and data.get("guild_id") == TARGET_GUILD_ID:
+                    content = data.get("content")
 
-                # Only triggers if: 
-                # 1. It's from YOU
-                # 2. It's in the RIGHT SERVER
-                if author_id == OWNER_ID and msg_guild_id == TARGET_GUILD_ID:
-                    
                     if content == ",j":
                         should_be_in_vc = True
                         current_status = "dnd"
-                        ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": TARGET_CHANNEL_ID, "self_mute": False, "self_deaf": False}}))
-                        time.sleep(1)
                         ws.send(json.dumps({"op": 3, "d": {"status": "dnd", "since": 0, "activities": [], "afk": False}}))
+                        time.sleep(1.2)
+                        ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": TARGET_CHANNEL_ID, "self_mute": False, "self_deaf": False}}))
+                        print("✓ Action: Join VC / Status: DnD")
                         threading.Thread(target=stealth_delete, args=(data.get("channel_id"), data.get("id"))).start()
 
                     elif content == ",l":
                         should_be_in_vc = False
                         current_status = "online"
-                        ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": None, "self_mute": False, "self_deaf": False}}))
-                        time.sleep(1)
                         ws.send(json.dumps({"op": 3, "d": {"status": "online", "since": 0, "activities": [], "afk": False}}))
+                        time.sleep(1.2)
+                        ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": None, "self_mute": False, "self_deaf": False}}))
+                        print("✓ Action: Leave VC / Status: Online")
                         threading.Thread(target=stealth_delete, args=(data.get("channel_id"), data.get("id"))).start()
         except: break
 
-def run_joiner():
+def run_bot():
+    print("Bot Thread Started. Listening for commands...")
     while True:
-        try: joiner(usertoken)
-        except: time.sleep(10)
+        try:
+            joiner(usertoken)
+        except Exception as e:
+            print(f"Gateway Error: {e}. Reconnecting in 10s...")
+            time.sleep(10)
 
-keep_alive()
-run_joiner()
+# --- ENTRY POINT ---
+if __name__ == "__main__":
+    # Start bot in background thread
+    threading.Thread(target=run_bot, daemon=True).start()
+    
+    # Run Flask on the main thread for Railway
+    port = int(os.environ.get("PORT", 8080))
+    print(f"Starting Web Server on port {port}")
+    app.run(host="0.0.0.0", port=port)
