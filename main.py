@@ -14,9 +14,9 @@ TARGET_GUILD_ID = "1474464326051172418"
 TARGET_CHANNEL_ID = "1474495027223855104" 
 OWNER_ID = "1407866476949536848"
 
-# Global state - set default to invisible if you prefer
+# Global state
 should_be_in_vc = False 
-current_status = "invisible" 
+current_status = "invisible" # Default starting status
 
 usertoken = os.getenv("TOKEN")
 if not usertoken:
@@ -76,7 +76,8 @@ def joiner(token):
         return
 
     try:
-        hello = json.loads(ws.recv())
+        raw_hello = ws.recv()
+        hello = json.loads(raw_hello)
         heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
     except:
         return
@@ -111,47 +112,25 @@ def joiner(token):
             
             if event.get("t") == "MESSAGE_CREATE":
                 data = event.get("d", {})
+                # Check for Owner ID and Guild ID to prevent accidental triggers in other servers
                 if data.get("author", {}).get("id") == OWNER_ID and data.get("guild_id") == TARGET_GUILD_ID:
                     content = data.get("content")
 
                     if content == ",j":
                         should_be_in_vc = True
                         current_status = "dnd"
-                        # Set status to DnD
+                        
+                        # Update status to DnD first
                         ws.send(json.dumps({"op": 3, "d": {"status": "dnd", "since": 0, "activities": [], "afk": False}}))
-                        time.sleep(1.2)
-                        # Join VC
-                        ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": TARGET_CHANNEL_ID, "self_mute": False, "self_deaf": False}}))
+                        time.sleep(1.0)
+                        
+                        # Join the Voice Channel
+                        ws.send(json.dumps({
+                            "op": 4, 
+                            "d": {"guild_id": TARGET_GUILD_ID, "channel_id": TARGET_CHANNEL_ID, "self_mute": False, "self_deaf": False}
+                        }))
                         print("✓ Action: Join VC / Status: DnD")
                         threading.Thread(target=stealth_delete, args=(data.get("channel_id"), data.get("id"))).start()
 
                     elif content == ",l":
-                        should_be_in_vc = False
-                        current_status = "invisible"
-                        # Set status to Invisible
-                        ws.send(json.dumps({"op": 3, "d": {"status": "invisible", "since": 0, "activities": [], "afk": False}}))
-                        time.sleep(1.2)
-                        # Leave VC
-                        ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": None, "self_mute": False, "self_deaf": False}}))
-                        print("✓ Action: Leave VC / Status: Invisible")
-                        threading.Thread(target=stealth_delete, args=(data.get("channel_id"), data.get("id"))).start()
-        except: 
-            break
-
-def run_bot():
-    while True:
-        try:
-            joiner(usertoken)
-        except Exception as e:
-            print(f"Gateway Error: {e}. Reconnecting in 10s...")
-            time.sleep(10)
-
-# --- ENTRY POINT ---
-if __name__ == "__main__":
-    # Start bot in background thread
-    threading.Thread(target=run_bot, daemon=True).start()
-    
-    # Run Flask on the main thread for Railway
-    port = int(os.environ.get("PORT", 8080))
-    print(f"Starting Web Server on port {port}")
-    app.run(host="0.0.0.0", port=port)
+                        should_be
