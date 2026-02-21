@@ -14,21 +14,22 @@ TARGET_GUILD_ID = "1474464326051172418"
 TARGET_CHANNEL_ID = "1474495027223855104" 
 OWNER_ID = "1407866476949536848"
 
-# Global state
+# Global state - set default to invisible if you prefer
 should_be_in_vc = False 
-current_status = "online" 
+current_status = "invisible" 
 
 usertoken = os.getenv("TOKEN")
 if not usertoken:
     print("[ERROR] TOKEN environment variable is missing!")
-    sys.exit()
+else:
+    print(f"[INFO] Token detected (starts with: {usertoken[:10]}...)")
 
 # --- WEB SERVER (FOR RAILWAY HEALTH CHECKS) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Bot is running", 200
+    return "Bot is running and listening.", 200
 
 # --- UTILS ---
 def get_super_properties():
@@ -49,23 +50,38 @@ headers = {
 def stealth_delete(channel_id, message_id):
     time.sleep(random.uniform(2.5, 4.5))
     url = f"https://discord.com/api/v9/channels/{channel_id}/messages/{message_id}"
-    try: requests.delete(url, headers=headers)
-    except: pass
+    try: 
+        requests.delete(url, headers=headers)
+    except: 
+        pass
 
 def heartbeat_loop(ws, interval):
     while True:
         time.sleep(interval + random.uniform(0.1, 0.5))
-        try: ws.send(json.dumps({"op": 1, "d": None}))
-        except: break
+        try: 
+            ws.send(json.dumps({"op": 1, "d": None}))
+        except: 
+            break
 
 # --- MAIN GATEWAY LOGIC ---
 def joiner(token):
     global should_be_in_vc, current_status
+    
+    print("[DEBUG] Connecting to Discord Gateway...")
     ws = WebSocket()
-    ws.connect("wss://gateway.discord.gg/?v=9&encoding=json")
-    hello = json.loads(ws.recv())
-    heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
+    try:
+        ws.connect("wss://gateway.discord.gg/?v=9&encoding=json", timeout=10)
+    except Exception as e:
+        print(f"[ERROR] Connection failed: {e}")
+        return
 
+    try:
+        hello = json.loads(ws.recv())
+        heartbeat_interval = hello["d"]["heartbeat_interval"] / 1000
+    except:
+        return
+
+    # IDENTIFY
     auth = {
         "op": 2,
         "d": {
@@ -85,12 +101,14 @@ def joiner(token):
         }))
 
     threading.Thread(target=heartbeat_loop, args=(ws, heartbeat_interval), daemon=True).start()
+    print("[SUCCESS] Bot is connected and ready.")
 
     while True:
-        response = ws.recv()
-        if not response: break
         try:
+            response = ws.recv()
+            if not response: break
             event = json.loads(response)
+            
             if event.get("t") == "MESSAGE_CREATE":
                 data = event.get("d", {})
                 if data.get("author", {}).get("id") == OWNER_ID and data.get("guild_id") == TARGET_GUILD_ID:
@@ -99,24 +117,28 @@ def joiner(token):
                     if content == ",j":
                         should_be_in_vc = True
                         current_status = "dnd"
+                        # Set status to DnD
                         ws.send(json.dumps({"op": 3, "d": {"status": "dnd", "since": 0, "activities": [], "afk": False}}))
                         time.sleep(1.2)
+                        # Join VC
                         ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": TARGET_CHANNEL_ID, "self_mute": False, "self_deaf": False}}))
                         print("✓ Action: Join VC / Status: DnD")
                         threading.Thread(target=stealth_delete, args=(data.get("channel_id"), data.get("id"))).start()
 
                     elif content == ",l":
                         should_be_in_vc = False
-                        current_status = "online"
-                        ws.send(json.dumps({"op": 3, "d": {"status": "online", "since": 0, "activities": [], "afk": False}}))
+                        current_status = "invisible"
+                        # Set status to Invisible
+                        ws.send(json.dumps({"op": 3, "d": {"status": "invisible", "since": 0, "activities": [], "afk": False}}))
                         time.sleep(1.2)
+                        # Leave VC
                         ws.send(json.dumps({"op": 4, "d": {"guild_id": TARGET_GUILD_ID, "channel_id": None, "self_mute": False, "self_deaf": False}}))
-                        print("✓ Action: Leave VC / Status: Online")
+                        print("✓ Action: Leave VC / Status: Invisible")
                         threading.Thread(target=stealth_delete, args=(data.get("channel_id"), data.get("id"))).start()
-        except: break
+        except: 
+            break
 
 def run_bot():
-    print("Bot Thread Started. Listening for commands...")
     while True:
         try:
             joiner(usertoken)
